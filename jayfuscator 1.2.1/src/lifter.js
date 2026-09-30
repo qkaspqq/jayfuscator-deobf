@@ -1,16 +1,31 @@
-export function lift(rootProto, cz, mutators, opcodeMap) {
+export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
+  const {
+    opField = 124,
+    aField = 27,
+    bField = 121,
+    cField = 4,
+    bzField = 32,
+    bExtraField = 144
+  } = fieldKeys;
+
   function resolveMutators(proto) {
     for (let pc = 0; pc < proto.instructions.length; pc++) {
       const inst = proto.instructions[pc];
-      const op = inst[124];
+      const op = inst.op !== undefined ? inst.op : inst[opField];
       const mut = mutators[op];
       if (mut) {
         if (mut.type === "cz") {
-          const bz = inst[144];
+          const bz = inst.bz !== undefined ? inst.bz : inst[bExtraField];
           Object.assign(inst, cz[bz]);
         } else if (mut.type === "fields") {
           Object.assign(inst, mut.fields);
         }
+
+        if (inst[opField] !== undefined) inst.op = inst[opField];
+        if (inst[aField] !== undefined) inst.a = inst[aField];
+        if (inst[bField] !== undefined) inst.b = inst[bField];
+        if (inst[cField] !== undefined) inst.c = inst[cField];
+        if (inst[bExtraField] !== undefined) inst.bz = inst[bExtraField];
       }
     }
     for (const child of proto.protos) {
@@ -59,10 +74,10 @@ export function lift(rootProto, cz, mutators, opcodeMap) {
     while (pc >= 1 && pc <= insts.length && !visited.has(pc)) {
       visited.add(pc);
       const inst = insts[pc - 1];
-      const op = inst[124];
-      const a = inst[27];
-      const b = inst[4];
-      const c = inst[121];
+      const op = inst.op !== undefined ? inst.op : inst[opField];
+      const a = inst.a !== undefined ? inst.a : inst[aField];
+      const b = inst.c !== undefined ? inst.c : inst[cField];
+      const c = inst.b !== undefined ? inst.b : inst[bField];
       const opType = opcodeMap[op] || "UNKNOWN";
 
       if (opType === "JMP") {
