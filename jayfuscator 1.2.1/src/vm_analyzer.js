@@ -45,11 +45,15 @@ export function analyzeVm(vmLoopCode, paramMap) {
 
   for (const s of stmts) {
     if (s.type === "AssignmentStatement") {
-      checkAssign(s.variables[0], s.init[0]);
+      for (let i = 0; i < s.variables.length; i++) {
+        checkAssign(s.variables[i], s.init[i]);
+      }
     } else if (s.type === "DoStatement") {
       for (const sub of s.body) {
         if (sub.type === "AssignmentStatement") {
-          checkAssign(sub.variables[0], sub.init[0]);
+          for (let i = 0; i < sub.variables.length; i++) {
+            checkAssign(sub.variables[i], sub.init[i]);
+          }
         }
       }
     }
@@ -157,8 +161,6 @@ export function analyzeVm(vmLoopCode, paramMap) {
   }
 
   const mutators = {};
-  const opcodeMap = {};
-
   for (const [opStr, handler] of Object.entries(opcodeHandlers)) {
     const op = Number(opStr);
     const norm = handler.replace(/\s+/g, "");
@@ -190,55 +192,190 @@ export function analyzeVm(vmLoopCode, paramMap) {
         continue;
       }
     }
-
-    let type = "UNKNOWN";
-    if (norm.startsWith(`${pcVar}=`)) type = "JMP";
-    else if (norm.startsWith("return")) type = "RETURN";
-    else if (norm.includes("by(") || norm.includes("bu({}") || norm.includes("bu(")) type = "CLOSURE";
-    else if (norm.includes("={}") || norm.endsWith("={}")) type = "NEWTABLE";
-    else if (norm.includes("=nil") || norm.endsWith("=nil")) type = "LOADNIL";
-    else if (norm.includes("0~=") || norm.includes("0==")) type = "LOADBOOL";
-    else if (norm.includes("=-") && !norm.includes("--")) type = "UNM";
-    else if (norm.includes("=(not")) type = "NOT";
-    else if (norm.includes("=#")) type = "LEN";
-    else if (norm.includes("..")) type = "CONCAT";
-    else if (norm.includes("+")) type = "ADD";
-    else if (norm.includes("-") && !norm.includes("--")) type = "SUB";
-    else if (norm.includes("*")) type = "MUL";
-    else if (norm.includes("/")) type = "DIV";
-    else if (norm.includes("%")) type = "MOD";
-    else if (norm.includes("^")) type = "POW";
-    else if (norm.includes("()") || norm.includes("(bx(") || norm.includes("ch(")) type = "CALL";
-    else if (norm.includes("<")) type = "JMP_LT";
-    else if (norm.includes(">")) type = "JMP_GT";
-    else if (norm.includes("==")) type = "JMP_EQ";
-    else if (norm.includes("~=")) type = "JMP_NE";
-    else if (norm.includes("for") && norm.includes("do") && norm.includes(pcVar)) type = "FORLOOP";
-    else if (norm.includes("for") && norm.includes("do")) type = "FORPREP";
-    else if (norm.includes("ifnot") && norm.includes(pcVar)) type = "TEST";
-    else if (norm.includes("if") && norm.includes(pcVar)) type = "TESTSET";
-    else if (norm.includes("x[") && norm.includes("]=")) type = "SETUPVAL";
-    else if (norm.includes("=x[")) type = "GETUPVAL";
-    else if (norm.includes("db[") && norm.includes("]=")) type = "SETGLOBAL";
-    else if (norm.includes("=db[")) type = "GETGLOBAL";
-    else if (norm.includes("[") && norm.includes("][") && norm.includes("]=")) type = "SETTABLE";
-    else if (norm.includes("][")) type = "GETTABLE";
-    else if (norm.includes("=bc[")) type = "LOADK";
-    else if (norm.includes("cb[") && norm.includes("=cb[")) type = "MOVE";
-
-    opcodeMap[op] = type;
   }
 
-  const fieldKeys = {
-    opField: opField || 124,
-    aField: varToField["ck"] || 27,
-    bField: varToField["cj"] || 121,
-    cField: varToField["bs"] || 4,
-    bzField: varToField["cg"] || 32,
-    bExtraField: varToField["bz"] || 144,
-    tagField: varToField["cn"] || 51,
-    typeField: 159
-  };
+  const regVar = vmLoopCode.includes("cb[") ? "cb" : "r";
+  const constVar = vmLoopCode.includes("bc[") ? "bc" : "j";
+  const envVar = vmLoopCode.includes("db[") ? "db" : (vmLoopCode.includes("f[") ? "f" : "db");
+  const upvalVar = vmLoopCode.includes("x[") ? "x" : "c";
+  const protoVar = vmLoopCode.includes("bb[") ? "bb" : "i";
+  const vmRunnerName = vmLoopCode.includes("bu(") ? "bu" : "bj";
 
-  return { opcodeHandlers, mutators, opcodeMap, fieldKeys };
+  const opcodeMap = {};
+  for (const [opStr, handler] of Object.entries(opcodeHandlers)) {
+    const op = Number(opStr);
+    const norm = handler.replace(/\s+/g, "");
+
+    if (norm.startsWith(`${pcVar}=`)) {
+      opcodeMap[op] = { type: "JMP" };
+      continue;
+    }
+    if (norm.startsWith("return")) {
+      opcodeMap[op] = { type: "RETURN" };
+      continue;
+    }
+
+    if (norm.includes("(") && norm.includes(")")) {
+      if (vmRunnerName && norm.includes(`${vmRunnerName}(`)) {
+        opcodeMap[op] = { type: "CLOSURE" };
+        continue;
+      }
+      if (norm.includes(`${regVar}[`) && (norm.includes(`](${regVar}[`) || norm.includes(`]())`) || norm.includes(`]()`) || norm.includes("bn(") || norm.includes("x("))) {
+        opcodeMap[op] = { type: "CALL" };
+        continue;
+      }
+    }
+
+    if (norm.includes(`${regVar}[`) && (norm.includes("={}") || norm.endsWith("={}"))) {
+      opcodeMap[op] = { type: "NEWTABLE" };
+      continue;
+    }
+    if (norm.includes("=nil") || norm.endsWith("=nil")) {
+      opcodeMap[op] = { type: "LOADNIL" };
+      continue;
+    }
+    if (norm.includes("0~=") || norm.includes("0==") || norm.includes("~=0")) {
+      opcodeMap[op] = { type: "LOADBOOL" };
+      continue;
+    }
+
+    if (norm.includes("][") && norm.indexOf("][") < norm.indexOf("=")) {
+      opcodeMap[op] = {
+        type: "SETTABLE",
+        keyIsK: constVar ? norm.includes(`[${constVar}[`) : false,
+        valIsK: constVar ? norm.includes(`=${constVar}[`) : false
+      };
+      continue;
+    }
+    if (norm.includes("][") && norm.indexOf("][") > norm.indexOf("=")) {
+      opcodeMap[op] = {
+        type: "GETTABLE",
+        keyIsK: constVar ? norm.includes(`[${constVar}[`) : false
+      };
+      continue;
+    }
+    if (constVar && norm.includes(`[${constVar}[`)) {
+      if (norm.indexOf(`[${constVar}[`) < norm.indexOf("=")) {
+        opcodeMap[op] = {
+          type: "SETTABLE",
+          keyIsK: true,
+          valIsK: norm.includes(`=${constVar}[`)
+        };
+      } else {
+        opcodeMap[op] = {
+          type: "GETTABLE",
+          keyIsK: true
+        };
+      }
+      continue;
+    }
+
+    if (envVar && norm.includes(`=${envVar}[`)) {
+      opcodeMap[op] = { type: "GETGLOBAL" };
+      continue;
+    }
+    if (envVar && norm.includes(`${envVar}[`) && norm.includes("]=")) {
+      opcodeMap[op] = { type: "SETGLOBAL" };
+      continue;
+    }
+
+    if (upvalVar && norm.includes(`=${upvalVar}[`)) {
+      opcodeMap[op] = { type: "GETUPVAL" };
+      continue;
+    }
+    if (upvalVar && norm.includes(`${upvalVar}[`) && norm.includes("]=")) {
+      opcodeMap[op] = { type: "SETUPVAL" };
+      continue;
+    }
+
+    if (constVar && norm.includes(`=${constVar}[`)) {
+      opcodeMap[op] = { type: "LOADK" };
+      continue;
+    }
+
+    if (regVar && new RegExp(`^${regVar}\\[[^\\]]+\\]=${regVar}\\[[^\\]]+\\]$`).test(norm)) {
+      opcodeMap[op] = { type: "MOVE" };
+      continue;
+    }
+
+    if (protoVar && norm.includes(`${protoVar}[`)) {
+      opcodeMap[op] = { type: "CLOSURE" };
+      continue;
+    }
+
+    if (norm.includes("=-") && !norm.includes("--")) {
+      opcodeMap[op] = { type: "UNM" };
+      continue;
+    }
+    if (norm.includes("=(not") || norm.includes("=not")) {
+      opcodeMap[op] = { type: "NOT" };
+      continue;
+    }
+    if (norm.includes("=#")) {
+      opcodeMap[op] = { type: "LEN" };
+      continue;
+    }
+
+    if (norm.includes("..")) {
+      opcodeMap[op] = { type: "CONCAT" };
+      continue;
+    }
+    if (norm.includes("+")) {
+      opcodeMap[op] = { type: "ADD", rightIsK: constVar ? norm.includes(`+${constVar}[`) : false };
+      continue;
+    }
+    if (norm.includes("-") && !norm.includes("--")) {
+      opcodeMap[op] = { type: "SUB", rightIsK: constVar ? norm.includes(`-${constVar}[`) : false };
+      continue;
+    }
+    if (norm.includes("*")) {
+      opcodeMap[op] = { type: "MUL", rightIsK: constVar ? norm.includes(`*${constVar}[`) : false };
+      continue;
+    }
+    if (norm.includes("/")) {
+      opcodeMap[op] = { type: "DIV", rightIsK: constVar ? norm.includes(`/${constVar}[`) : false };
+      continue;
+    }
+    if (norm.includes("%")) {
+      opcodeMap[op] = { type: "MOD", rightIsK: constVar ? norm.includes(`%${constVar}[`) : false };
+      continue;
+    }
+    if (norm.includes("^")) {
+      opcodeMap[op] = { type: "POW", rightIsK: constVar ? norm.includes(`^${constVar}[`) : false };
+      continue;
+    }
+
+    if (norm.includes("<") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "JMP_LT" };
+      continue;
+    }
+    if (norm.includes(">") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "JMP_GT" };
+      continue;
+    }
+    if (norm.includes("==") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "JMP_EQ" };
+      continue;
+    }
+    if (norm.includes("~=") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "JMP_NE" };
+      continue;
+    }
+    if (norm.includes("for") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "FORLOOP" };
+      continue;
+    }
+    if (norm.includes("ifnot") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "TEST" };
+      continue;
+    }
+    if (norm.includes("if") && norm.includes(pcVar)) {
+      opcodeMap[op] = { type: "TESTSET" };
+      continue;
+    }
+
+    opcodeMap[op] = { type: "UNKNOWN" };
+  }
+
+  return { opcodeHandlers, mutators, opcodeMap };
 }
