@@ -4,7 +4,6 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
     aField = 27,
     bField = 121,
     cField = 4,
-    bzField = 32,
     bExtraField = 144
   } = fieldKeys;
 
@@ -20,7 +19,6 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
         } else if (mut.type === "fields") {
           Object.assign(inst, mut.fields);
         }
-
         if (inst[opField] !== undefined) inst.op = inst[opField];
         if (inst[aField] !== undefined) inst.a = inst[aField];
         if (inst[bField] !== undefined) inst.b = inst[bField];
@@ -78,7 +76,8 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
       const a = inst.a !== undefined ? inst.a : inst[aField];
       const b = inst.c !== undefined ? inst.c : inst[cField];
       const c = inst.b !== undefined ? inst.b : inst[bField];
-      const opType = opcodeMap[op] || "UNKNOWN";
+      const opDesc = opcodeMap[op] || { type: "UNKNOWN" };
+      const opType = typeof opDesc === "string" ? opDesc : opDesc.type;
 
       if (opType === "JMP") {
         pc = b + 1;
@@ -86,7 +85,7 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
       }
 
       if (opType === "LOADK") {
-        const val = getK(b);
+        const val = getK(b) !== undefined ? getK(b) : getK(c);
         const code = formatLiteral(val);
         statements.push(`${pad}local ${getReg(a)} = ${code}`);
         R[a] = { type: "literal", value: val, code: getReg(a) };
@@ -120,8 +119,9 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
         statements.push(`${pad}${name} = ${val.code}`);
       } else if (opType === "GETTABLE") {
         const obj = getExpr(b);
-        const key = getK(c);
-        if (key !== undefined) {
+        const keyIsK = opDesc.keyIsK !== undefined ? opDesc.keyIsK : (getK(c) !== undefined);
+        if (keyIsK && getK(c) !== undefined) {
+          const key = getK(c);
           if (isValidIdent(key)) {
             statements.push(`${pad}local ${getReg(a)} = ${obj.code}.${key}`);
           } else {
@@ -134,9 +134,12 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
         R[a] = { type: "reg", code: getReg(a) };
       } else if (opType === "SETTABLE") {
         const target = getExpr(a);
-        const key = getK(b);
+        const keyIsK = opDesc.keyIsK !== undefined ? opDesc.keyIsK : (getK(b) !== undefined);
+        const valIsK = opDesc.valIsK !== undefined ? opDesc.valIsK : false;
+
         let keyStr;
-        if (key !== undefined) {
+        if (keyIsK && getK(b) !== undefined) {
+          const key = getK(b);
           keyStr = isValidIdent(key) ? `.${key}` : `[${formatLiteral(key)}]`;
         } else {
           const kReg = getExpr(b);
@@ -144,9 +147,8 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
         }
 
         let valStr;
-        const valK = getK(c);
-        if (valK !== undefined) {
-          valStr = formatLiteral(valK);
+        if (valIsK && getK(c) !== undefined) {
+          valStr = formatLiteral(getK(c));
         } else {
           valStr = getExpr(c).code;
         }
@@ -155,12 +157,7 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
       } else if (opType === "NEWTABLE") {
         statements.push(`${pad}local ${getReg(a)} = {}`);
         R[a] = { type: "table", code: getReg(a) };
-      } else if (opType === "SELF") {
-        const obj = getExpr(b);
-        const method = getK(c);
-        R[a + 1] = obj;
-        R[a] = { type: "method", obj, method, code: `${obj.code}:${method}` };
-      } else if (opType === "CLOSURE" || opType === "CLOSURE_UPVAL") {
+      } else if (opType === "CLOSURE") {
         const childProto = proto.protos[b];
         const params = [];
         if (childProto && childProto.numParams > 0) {
@@ -178,7 +175,7 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
         const fn = R[a];
         const isMethod = fn && fn.type === "method";
         const startArg = isMethod ? a + 2 : a + 1;
-        const endArg = b === 0 ? a + 1 : b;
+        const endArg = b === 0 ? a + 1 : (b > a ? b : a + 1);
 
         const args = [];
         for (let i = startArg; i <= endArg; i++) {
@@ -213,8 +210,8 @@ export function lift(rootProto, cz, mutators, opcodeMap, fieldKeys = {}) {
         break;
       } else if (opType === "ADD" || opType === "SUB" || opType === "MUL" || opType === "DIV" || opType === "MOD" || opType === "POW") {
         const opSym = { ADD: "+", SUB: "-", MUL: "*", DIV: "/", MOD: "%", POW: "^" }[opType];
-        const left = getK(b) !== undefined ? formatLiteral(getK(b)) : getExpr(b).code;
-        const right = getK(c) !== undefined ? formatLiteral(getK(c)) : getExpr(c).code;
+        const left = (opDesc.leftIsK && getK(b) !== undefined) ? formatLiteral(getK(b)) : getExpr(b).code;
+        const right = (opDesc.rightIsK && getK(c) !== undefined) ? formatLiteral(getK(c)) : getExpr(c).code;
         statements.push(`${pad}local ${getReg(a)} = (${left} ${opSym} ${right})`);
         R[a] = { type: "binary", code: getReg(a) };
       } else if (opType === "CONCAT") {
