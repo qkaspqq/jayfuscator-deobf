@@ -1,3 +1,7 @@
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const luaparse = require("luaparse");
+
 export function extract(source) {
   const paramMatch = source.match(/return\s*\(\s*function\s*\(([^)]+)\)/) ||
                      source.match(/function\s*\(([^)]+)\)/);
@@ -31,6 +35,7 @@ export function extract(source) {
     paramMap[paramNames[i]] = argValues[i];
   }
 
+  let bytecodeBuf = null;
   let maxHex = "";
   const hexRegex = /['"]([0-9A-Fa-f]{200,})['"]/g;
   let hm;
@@ -39,39 +44,69 @@ export function extract(source) {
       maxHex = hm[1];
     }
   }
-  if (!maxHex) throw new Error("failed to locate bytecode payload");
+  if (maxHex) {
+    bytecodeBuf = Buffer.from(maxHex, "hex");
+  } else {
+    const b64Regex = /['"]([A-Za-z0-9+/=]{100,})['"]/g;
+    let bm;
+    while ((bm = b64Regex.exec(source)) !== null) {
+      const raw = bm[1];
+      try {
+        const b64 = Buffer.from(raw, "base64");
+        const out = [];
+        let i = 0;
+        let valid = true;
+        while (i < b64.length) {
+          const b = b64[i++];
+          if (b === 255) {
+            if (i >= b64.length) { valid = false; break; }
+            const count = b64[i++];
+            if (count === 0) {
+              out.push(255);
+            } else {
+              if (i >= b64.length) { valid = false; break; }
+              const val = b64[i++];
+              for (let c = 0; c < count; c++) out.push(val);
+            }
+          } else {
+            out.push(b);
+          }
+        }
+        if (valid && out.length > 50) {
+          bytecodeBuf = Buffer.from(out);
+          break;
+        }
+      } catch {}
+    }
+  }
+  if (!bytecodeBuf) throw new Error("failed to locate bytecode payload");
 
   const whileMatch = source.match(/\bwhile\s+true\s+do\b/);
   if (!whileMatch) throw new Error("failed to locate vm loop");
   const whileStart = whileMatch.index;
 
-  const termMatch = source.slice(whileStart).match(/do\s*(\w+)\s*=\s*\(\s*\1\s*\+\s*1\s*\)\s*;\s*end\s*end/);
-  let vmLoop;
-  if (termMatch) {
-    const whileEnd = whileStart + termMatch.index + termMatch[0].length;
-    vmLoop = source.slice(whileStart, whileEnd);
-  } else {
-    let pos = whileStart + whileMatch[0].length;
-    let blockDepth = 1;
-    const kwRegex = /\b(while|for|if|function|do|then|end)\b/g;
-    kwRegex.lastIndex = pos;
-    let km;
-    let whileEnd = -1;
-    while ((km = kwRegex.exec(source)) !== null) {
-      const kw = km[1];
-      if (kw === "do" || kw === "then" || kw === "function") {
-        blockDepth++;
-      } else if (kw === "end") {
-        blockDepth--;
-        if (blockDepth === 0) {
-          whileEnd = km.index + 3;
+  let pos = whileStart + whileMatch[0].length;
+  let endPos = source.indexOf("end", pos);
+  let vmLoop = null;
+  while (endPos !== -1) {
+    const candidate = source.slice(whileStart, endPos + 3);
+    try {
+      const ast = luaparse.parse(candidate, { luaVersion: "5.1" });
+      const whileStmt = ast.body[0];
+      if (whileStmt && whileStmt.type === "WhileStatement") {
+        const body = whileStmt.body;
+        let lastStmt = body[body.length - 1];
+        if (lastStmt.type === "DoStatement") lastStmt = lastStmt.body[lastStmt.body.length - 1];
+        if (lastStmt.type === "AssignmentStatement") {
+          vmLoop = candidate;
           break;
         }
       }
-    }
-    if (whileEnd === -1) throw new Error("failed to close vm loop");
-    vmLoop = source.slice(whileStart, whileEnd);
+    } catch {}
+    endPos = source.indexOf("end", endPos + 3);
   }
 
-  return { paramMap, bytecodeHex: maxHex, vmLoop };
+  if (!vmLoop) throw new Error("failed to extract valid vm loop ast");
+
+  return { paramMap, bytecodeBuf, vmLoop };
 }
